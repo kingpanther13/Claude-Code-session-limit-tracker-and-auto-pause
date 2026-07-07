@@ -1,0 +1,10 @@
+{
+  "_comment": "Bands = usage % thresholds that inject a context message when a window first crosses each band (per reset window, de-duped). Directives are keyed by band string, separately for session (5h) and weekly (7d). Any directive containing the token @@AUTORESUME@@ triggers the pause+auto-resume wiring: the hook computes a RESUME TARGET = that window's reset + 1 min and emits a ready-to-run CronCreate(recurring:false). Bands with no directive are report-only.",
+  "bands": [50, 75, 90, 95, 98, 99],
+  "session_directives": {
+    "98": "SESSION LIMIT CRITICAL (5h window >=98%). Immediately STOP and PAUSE ALL work: call TaskStop on every running agent/subagent/workflow/background task, start nothing new, finish nothing new. Write a one-line handoff of what was in progress. Then arm a ONE-TIME automatic resume using the RESUME TARGET below (CronCreate recurring:false) whose prompt says to resume the paused work from the handoff. After scheduling, tell the user and go idle. @@AUTORESUME@@"
+  },
+  "weekly_directives": {
+    "99": "WEEKLY LIMIT CRITICAL (7d window >=99%). Immediately STOP and PAUSE ALL work: call TaskStop on every running agent/subagent/workflow/background task, start nothing new, finish nothing new. Write a one-line handoff of what was in progress. Then arm a ONE-TIME automatic resume using the RESUME TARGET below (CronCreate recurring:false) whose prompt says to resume the paused work from the handoff. After scheduling, tell the user and go idle. @@AUTORESUME@@"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "//": "Merge these two blocks into your ~/.claude/settings.json (user) or .claude/settings.json (project). Do not replace the whole file - add statusLine and hooks alongside your existing settings.",
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-usage.sh",
+    "refreshInterval": 10
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/usage-threshold-hook.sh PostToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/usage-threshold-hook.sh UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
