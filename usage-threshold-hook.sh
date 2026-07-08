@@ -9,7 +9,8 @@
 # Directives come from ~/.claude/usage-actions.json (session_directives /
 # weekly_directives, keyed by band string). Any directive containing the token
 # @@AUTORESUME@@ also emits a RESUME TARGET (that window's reset + 1 min) as a
-# ready-to-run CronCreate(recurring:false) call. Bands with no directive report only.
+# background `sleep <secs>` (Bash run_in_background) that re-invokes the model when
+# the window reopens. Bands with no directive report only.
 #
 # Env overrides (for testing without touching your live files):
 #   CLAUDE_USAGE_STATE / CLAUDE_USAGE_ACTIONS / CLAUDE_USAGE_FIRED
@@ -35,8 +36,13 @@ BANDS_JSON="$(jq -c '.bands' "$ACTIONS" 2>/dev/null)"
 
 band_for()   { jq -n --argjson pct "$1" --argjson b "$BANDS_JSON" '[ $b[] | select(. <= $pct) ] | (max // 0)'; }
 prev_band()  { jq -r --arg w "$1" --argjson r "$2" '(.[$w] // {}) | if (.reset == $r) then (.band // 0) else 0 end' "$FIRED"; }
-sess_dir()   { jq -r --arg b "$1" '.session_directives[$b] // (if (($b|tonumber) >= 98) then (.session_directives["98"] // "") else "" end)' "$ACTIONS"; }
-week_dir()   { jq -r --arg b "$1" '.weekly_directives[$b] // ""' "$ACTIONS"; }
+# Directive for a crossed band = the one defined at the HIGHEST directive-band <= it.
+# So the stop threshold is set purely by which band you put the directive on in
+# usage-actions.json - no need to edit this script. Also covers a window that
+# jumps straight past the critical band in a single poll (it still inherits the directive).
+dir_for()    { jq -r --arg b "$1" --arg k "$2" '(.[$k] // {}) as $d | ([ $d | keys[] | tonumber | select(. <= ($b|tonumber)) ] | max) as $m | if $m == null then "" else ($d[($m|tostring)] // "") end' "$ACTIONS"; }
+sess_dir()   { dir_for "$1" session_directives; }
+week_dir()   { dir_for "$1" weekly_directives; }
 
 fmt_rel() {
   local e="${1:-}"; case "$e" in ""|"null"|"0") echo "unknown"; return;; esac
@@ -51,14 +57,12 @@ fmt_abs() {
 compute_resume() {        # reset-epoch  label
   local reset="$1" label="$2"
   if [ "$reset" != "0" ] && [ -n "$reset" ]; then
-    local re=$(( reset + 60 )) cf ra
-    cf="$(python3 -c 'import time,sys; t=time.localtime(int(sys.argv[1])); print("%d %d %d %d" % (t.tm_min,t.tm_hour,t.tm_mday,t.tm_mon))' "$re" 2>/dev/null)"
+    local re=$(( reset + 60 )) secs ra
+    secs=$(( re - now )); [ "$secs" -lt 1 ] && secs=1
     ra="$(fmt_abs "$re")"
-    if [ -n "$cf" ]; then
-      printf 'RESUME TARGET (%s): %s (window reopen + 1 min). Arm it now with CronCreate(recurring:false, cron:"%s *", prompt:"The %s usage window has reset - resume the paused work from the handoff note.").' \
-        "$label" "$ra" "$cf" "$label"
-      return
-    fi
+    printf 'RESUME TARGET (%s): %s (window reopen + 1 min), in %ss. Arm it NOW: start ONE background command `sleep %s` (Bash tool, run_in_background:true). It re-invokes you when it exits - then resume the paused work from the handoff note. Do NOT foreground-sleep and do NOT use CronCreate. Keep this session open (and the machine awake) until it fires.' \
+      "$label" "$ra" "$secs" "$secs"
+    return
   fi
   printf 'RESUME TARGET (%s): reset time unknown, cannot auto-schedule - pause only and resume manually after the window reopens.' "$label"
 }

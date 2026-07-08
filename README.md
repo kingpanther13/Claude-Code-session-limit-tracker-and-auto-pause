@@ -65,7 +65,7 @@ Manual install is just as easy: copy the three files into `~/.claude/`, `chmod
 ```jsonc
 {
   "bands": [50, 75, 90, 95, 98, 99],
-  "session_directives": { "98": "...stop + @@AUTORESUME@@" },
+  "session_directives": { "95": "...stop + @@AUTORESUME@@" },
   "weekly_directives":  { "99": "...stop + @@AUTORESUME@@" }
 }
 ```
@@ -73,12 +73,16 @@ Manual install is just as easy: copy the three files into `~/.claude/`, `chmod
 - **`bands`** — the usage percentages that trigger an injection. A window only
   fires when it *first* crosses a band within its current reset window.
 - **`session_directives` / `weekly_directives`** — keyed by band string. The
-  text is injected as an instruction to Claude when that band is crossed. Bands
+  text is injected as an instruction to Claude when that band is crossed. A
+  crossed band inherits the directive at the **highest directive-band ≤ it**, so
+  the stop point is set purely by which band you put the directive on — move it to
+  `"90"` to stop earlier or `"98"` to stop later, with no script change. Bands
   with no directive are **report-only** (Claude is told the level and the reset
   time, nothing more).
 - **`@@AUTORESUME@@`** — put this token anywhere in a directive and the hook
-  appends a `RESUME TARGET` = that window's reset **+ 1 minute**, formatted as a
-  ready-to-run `CronCreate(recurring:false, ...)` call.
+  appends a `RESUME TARGET` = that window's reset **+ 1 minute**, as a ready-to-run
+  background `sleep` (started with the Bash tool's `run_in_background`) that
+  re-invokes Claude the moment the window reopens.
 
 Every injected alert also reports **both** windows' reset times (absolute local
 time + countdown), so Claude always knows when relief arrives.
@@ -87,13 +91,15 @@ time + countdown), so Claude always knows when relief arrives.
 
 | Band | Session (5h) | Weekly (7d) |
 |-----:|--------------|-------------|
-| 50 / 75 / 90 / 95 | report only | report only |
-| 98 | **stop + auto-resume** | report only |
-| 99 | (stop, via ≥98 rule) | **stop + auto-resume** |
+| 50 / 75 / 90 | report only | report only |
+| 95 | **stop + auto-resume** | report only |
+| 98 | (stop, inherited) | report only |
+| 99 | (stop, inherited) | **stop + auto-resume** |
 
-Edit `usage-actions.json` to taste — change the bands, wire your own directives
-into other levels, or remove the auto-resume token to make it alert-only. The
-hook re-reads the file on every fire; no restart needed.
+Edit `usage-actions.json` to taste — move the directive to a different band to
+change the stop threshold, change the bands, wire your own directives into other
+levels, or remove the auto-resume token to make it alert-only. The hook re-reads
+the file on every fire; no restart needed.
 
 ## Auto-pause & resume
 
@@ -103,17 +109,21 @@ receives an instruction to:
 1. immediately **stop all work** (`TaskStop` any running agents/workflows) and
    start nothing new,
 2. write a one-line handoff of what was in progress, and
-3. schedule the provided one-time `CronCreate` for ~1 minute after the window
-   reopens, whose prompt tells it to resume from the handoff.
+3. start the provided background `sleep` (via the Bash tool's `run_in_background`)
+   that lands ~1 minute after the window reopens and re-invokes Claude to resume
+   from the handoff.
 
 **Honest caveats:**
 
 - It is **model-driven**. The hook injects the instruction and a ready-made
   command; Claude carries it out. It's a strong nudge with the exact command
   pre-computed, not a hard kernel-level kill switch.
-- `CronCreate` jobs are **in-session / in-memory**. The resume only fires if the
-  Claude Code REPL stays open through the cooldown. Close the terminal and the
-  scheduled resume is gone.
+- The resume is a **background `sleep` tied to the session**. It fires reliably
+  only while the Claude Code REPL stays open through the cooldown — close the
+  terminal and it's gone. (An earlier version used `CronCreate`, but those
+  in-memory jobs did not fire reliably even with the REPL open.) For long waits,
+  keep the machine awake — e.g. `caffeinate` on macOS, `termux-wake-lock` on
+  Termux — or the OS may kill the process before it wakes.
 - Resume continuity is only as good as the one-line handoff — it's continuity of
   intent, not a perfect snapshot of in-flight state.
 
