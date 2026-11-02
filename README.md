@@ -1,48 +1,25 @@
-# Claude Code Session Limit Tracker & Auto-Pause
+# Claude Code Session Limit Tracker
 
-Surfaces your Claude Code usage limits — the **5-hour session window** and the
-**7-day weekly window** — into Claude's own context while it works, and can
-automatically **pause all work when you're about to hit a limit and resume it
-after the window resets**.
+A Claude Code status line that shows your usage limits: the **5-hour session
+window** and the **7-day weekly window**, each with the time until it resets.
 
 ```
-S:8%(r2h1m) W:41%(r3d4h) | Opus 4.8
+S:8%(r2h01m) W:41%(r3d4h) | Opus 4.8
 ```
-
-## Why this exists
-
-Claude Code shows your rate-limit usage in `/usage`, but that number isn't
-available to Claude itself, and it isn't available to hooks either. So the model
-has no idea when you're about to be cut off mid-task.
-
-It turns out the numbers *are* exposed in exactly one place a script can reach:
-the **statusline command's stdin JSON**, under `rate_limits.five_hour` and
-`rate_limits.seven_day` (each with `used_percentage` and `resets_at`). This tool
-bridges that single gap.
 
 ## How it works
 
-- **Sensor — `statusline-usage.sh`** runs as your `statusLine` command. On every
-  render it reads the rate-limit percentages and reset times from stdin, writes
-  them to `~/.claude/usage-state.json`, and prints a compact bar showing both
-  windows and their countdowns.
-- **Trigger — `usage-threshold-hook.sh`** runs on `PostToolUse` (after every
-  tool call) and `UserPromptSubmit`. It reads the state file and, when a window
-  first crosses a threshold band, injects a message straight into Claude's
-  context via `hookSpecificOutput.additionalContext`. It de-dupes per band per
-  reset window, so each crossing fires once — not on every tool call.
-
-Because it fires on every tool call, you get near-continuous checks *while Claude
-is actively working* — which is exactly when limits get consumed. It does not
-(and cannot) wake Claude between turns; nothing in Claude Code can. It only
-speaks up during an active turn.
+Claude Code passes the status line command a JSON payload on stdin that
+includes `rate_limits.five_hour` and `rate_limits.seven_day` (each with
+`used_percentage` and `resets_at`). `statusline-usage.sh` reads them and
+prints the bar above. Each refresh runs a single `jq`.
 
 ## Requirements
 
 - A recent Claude Code with `rate_limits` in the statusline payload.
-- A **Claude.ai Pro/Max subscription** — the rate-limit fields only appear for
+- A **Claude.ai Pro/Max subscription**. The rate-limit fields only appear for
   subscription auth, and only after the first API response of a session.
-- `bash` (4+), `jq`, and `python3` on `PATH`.
+- `bash` (4+) and `jq` on `PATH`.
 
 ## Install
 
@@ -52,117 +29,40 @@ cd Claude-Code-session-limit-tracker-and-auto-pause
 ./install.sh
 ```
 
-Then merge the `statusLine` and `hooks` blocks from
+Then merge the `statusLine` block from
 [`settings.example.json`](settings.example.json) into your
-`~/.claude/settings.json` (add them alongside your existing settings — don't
-overwrite the file), and restart Claude Code or open `/hooks` once so it reloads.
+`~/.claude/settings.json` (add it alongside your existing settings, don't
+overwrite the file) and restart Claude Code.
 
-Manual install is just as easy: copy the three files into `~/.claude/`, `chmod
-+x` the two scripts, and add the settings blocks.
+Manual install: copy `statusline-usage.sh` into `~/.claude/`, `chmod +x` it,
+and add the settings block.
 
-## Configuration — `usage-actions.json`
+### Upgrading from the auto-pause version
 
-```jsonc
-{
-  "bands": [50, 75, 90, 95, 98, 99],
-  "session_directives": { "95": "...stop + @@AUTORESUME@@" },
-  "weekly_directives":  { "99": "...stop + @@AUTORESUME@@" }
-}
-```
-
-- **`bands`** — the usage percentages that trigger an injection. A window only
-  fires when it *first* crosses a band within its current reset window.
-- **`session_directives` / `weekly_directives`** — keyed by band string. The
-  text is injected as an instruction to Claude when that band is crossed. A
-  crossed band inherits the directive at the **highest directive-band ≤ it**, so
-  the stop point is set purely by which band you put the directive on — move it to
-  `"90"` to stop earlier or `"98"` to stop later, with no script change. Bands
-  with no directive are **report-only** (Claude is told the level and the reset
-  time, nothing more).
-- **`@@AUTORESUME@@`** — put this token anywhere in a directive and the hook
-  appends a `RESUME TARGET` = that window's reset **+ 1 minute**, as a ready-to-run
-  background `sleep` (started with the Bash tool's `run_in_background`) that
-  re-invokes Claude the moment the window reopens.
-
-Every injected alert also reports **both** windows' reset times (absolute local
-time + countdown), so Claude always knows when relief arrives.
-
-### Default behavior
-
-| Band | Session (5h) | Weekly (7d) |
-|-----:|--------------|-------------|
-| 50 / 75 / 90 | report only | report only |
-| 95 | **stop + auto-resume** | report only |
-| 98 | (stop, inherited) | report only |
-| 99 | (stop, inherited) | **stop + auto-resume** |
-
-Edit `usage-actions.json` to taste — move the directive to a different band to
-change the stop threshold, change the bands, wire your own directives into other
-levels, or remove the auto-resume token to make it alert-only. The hook re-reads
-the file on every fire; no restart needed.
-
-## Auto-pause & resume
-
-When a window crosses a band whose directive carries `@@AUTORESUME@@`, Claude
-receives an instruction to:
-
-1. immediately **stop all work** (`TaskStop` any running agents/workflows) and
-   start nothing new,
-2. write a one-line handoff of what was in progress, and
-3. start the provided background `sleep` (via the Bash tool's `run_in_background`)
-   that lands ~1 minute after the window reopens and re-invokes Claude to resume
-   from the handoff.
-
-**Honest caveats:**
-
-- It is **model-driven**. The hook injects the instruction and a ready-made
-  command; Claude carries it out. It's a strong nudge with the exact command
-  pre-computed, not a hard kernel-level kill switch.
-- The resume is a **background `sleep` tied to the session**. It fires reliably
-  only while the Claude Code REPL stays open through the cooldown — close the
-  terminal and it's gone. (An earlier version used `CronCreate`, but those
-  in-memory jobs did not fire reliably even with the REPL open.) For long waits,
-  keep the machine awake — e.g. `caffeinate` on macOS, `termux-wake-lock` on
-  Termux — or the OS may kill the process before it wakes.
-- Resume continuity is only as good as the one-line handoff — it's continuity of
-  intent, not a perfect snapshot of in-flight state.
+Earlier versions also shipped a threshold hook that paused and resumed work.
+It has been removed. Delete the `hooks` entries that run
+`usage-threshold-hook.sh` from `~/.claude/settings.json`, then delete
+`~/.claude/usage-threshold-hook.sh`, `usage-actions.json`, `usage-state.json`
+and `usage-fired.json`.
 
 ## Testing
 
-The live hook reads `~/.claude/usage-state.json` on every tool call, so **never
-write synthetic data into your live state file to test** — you'll fire real
-alerts. Both scripts honor env overrides so you can test against throwaway files:
-
 ```bash
-TD=$(mktemp -d)
-export CLAUDE_USAGE_STATE="$TD/state.json" \
-       CLAUDE_USAGE_FIRED="$TD/fired.json" \
-       CLAUDE_USAGE_DEBUG="$TD/dbg.jsonl" \
-       CLAUDE_USAGE_ACTIONS="$PWD/usage-actions.json"
-
-# feed a fake payload to the sensor, then run the hook against the temp state
 printf '%s' '{"model":{"display_name":"Test"},"rate_limits":{"five_hour":{"used_percentage":98.5,"resets_at":'"$(( $(date +%s)+3600 ))"'},"seven_day":{"used_percentage":40,"resets_at":'"$(( $(date +%s)+200000 ))"'}}}' \
   | bash statusline-usage.sh; echo
-echo '{}' | bash usage-threshold-hook.sh PostToolUse | jq -r '.hookSpecificOutput.additionalContext'
-rm -rf "$TD"
 ```
 
-Set `CLAUDE_USAGE_DEBUG` to a path to have the sensor log the raw statusline
-payloads (rolling last 20) — handy for confirming your Claude Code build
-actually includes the `rate_limits` fields. It's off unless the var is set.
+Set `CLAUDE_USAGE_DEBUG` to a path to have the script log the raw statusline
+payloads (rolling last 20), handy for confirming your Claude Code build
+includes the `rate_limits` fields. It's off unless the variable is set.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `statusline-usage.sh` | Sensor: writes `usage-state.json`, prints the status bar |
-| `usage-threshold-hook.sh` | Trigger: injects alerts + resume commands at thresholds |
-| `usage-actions.json` | Config: bands + per-band directives |
-| `settings.example.json` | The `statusLine` + `hooks` blocks to merge |
-| `install.sh` | Copies scripts into `~/.claude` |
-
-Runtime files the tool writes into `~/.claude/`: `usage-state.json` (current
-levels) and `usage-fired.json` (dedup bookkeeping).
+| `statusline-usage.sh` | Prints the status bar |
+| `settings.example.json` | The `statusLine` block to merge |
+| `install.sh` | Copies the script into `~/.claude` |
 
 ## License
 
