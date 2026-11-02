@@ -10,10 +10,12 @@ set -u
 
 DIR="$HOME/.claude"
 STATE="${CLAUDE_USAGE_STATE:-$DIR/usage-state.json}"
+TMP="$STATE.$$"
 DEBUG="${CLAUDE_USAGE_DEBUG:-}"
 
 IFS= read -r -d '' input || true
-printf -v now '%(%s)T' -1
+printf -v now '%(%s)T' -1 2>/dev/null   # bash 4.2+; date below for older bash
+[[ ${now-} =~ ^[0-9]+$ ]] || now="$(date +%s)"
 
 # Optional raw capture (opt-in) to verify the real payload schema.
 if [ -n "$DEBUG" ]; then
@@ -33,9 +35,9 @@ jq -r --argjson now "$now" '
   | (.rate_limits.seven_day.used_percentage | num) as $w | (.rate_limits.seven_day.resets_at | num) as $wr
   | ({five_hour_pct: $s, five_hour_reset: $sr, seven_day_pct: $w, seven_day_reset: $wr, updated: $now} | tojson),
     "S:\($s | fmt)(r\($sr | rel)) W:\($w | fmt)(r\($wr | rel)) | \(.model.display_name // .model.id // "" | if . == "" then "claude" else . end)"
-' <<<"$input" > "$STATE.tmp" 2>/dev/null
+' <<<"$input" > "$TMP" 2>/dev/null
 
-if { IFS= read -r state && IFS= read -r line; } < "$STATE.tmp" 2>/dev/null; then
+if { IFS= read -r state && IFS= read -r line; } < "$TMP" 2>/dev/null; then
   state="${state%$'\r'}"; line="${line%$'\r'}"
 else
   state="{\"five_hour_pct\":null,\"five_hour_reset\":null,\"seven_day_pct\":null,\"seven_day_reset\":null,\"updated\":$now}"
@@ -43,5 +45,5 @@ else
 fi
 
 # Persist state atomically.
-printf '%s\n' "$state" > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE" 2>/dev/null
+printf '%s\n' "$state" > "$TMP" && mv -f "$TMP" "$STATE" 2>/dev/null || rm -f "$TMP"
 printf '%s' "$line"
