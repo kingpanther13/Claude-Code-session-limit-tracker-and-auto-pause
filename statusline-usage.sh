@@ -18,8 +18,7 @@ fi
 
 jq -nj '
   def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
-  def fmt: if . == null then "--" else (floor as $f | . - $f as $x
-    | if $x > 0.5 or ($x == 0.5 and $f % 2 == 1) then $f + 1 else $f end) as $r | "\($r)%" end;   # half-even, like printf %.0f
+  def fmt: if . == null then "--" else "\(round)%" end;
   def rel($now): if . == null or . == 0 then "?" else (. - $now | floor) as $d
     | if $d <= 0 then "now" else ($d / 86400 | floor) as $D | ($d % 86400 / 3600 | floor) as $h | ($d % 3600 / 60 | floor) as $m
       | if $D > 0 then "\($D)d\($h)h" else "\($h)h\(if $m < 10 then "0" else "" end)\($m)m" end end end;
